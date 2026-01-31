@@ -16,6 +16,20 @@ genai.configure(api_key=api_key)
 def extract_data_with_gemini(uploaded_file):
     # Usamos Gemini 1.5 Flash por velocidad
     model = genai.GenerativeModel('gemini-1.5-flash-latest')
+
+    # --- BLOQUE DE DIAGNÓSTICO TEMPORAL ---
+st.write("🔍 Buscando modelos disponibles para tu API Key...")
+try:
+    available_models = []
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            available_models.append(m.name)
+    
+    st.success(f"Modelos encontrados: {len(available_models)}")
+    st.code(available_models) # Aquí verás los nombres REALES (ej: models/gemini-pro)
+except Exception as e:
+    st.error(f"Error grave conectando con Google: {e}")
+# --------------------------------------
     
     prompt = """
     Actúa como un experto administrativo de seguros. Analiza este documento (PDF/Imagen) y extrae la siguiente información en formato JSON estricto.
@@ -95,3 +109,4 @@ if uploaded_file:
                     # Limpiar estado para siguiente subida
 
                     del st.session_state['datos_extraidos']
+
