@@ -4,109 +4,119 @@ import json
 import pandas as pd
 from datetime import datetime
 
-# Configuración de página
-st.set_page_config(page_title="Gestor de Pólizas Inbursa", layout="centered")
+# Configuración de la página
+st.set_page_config(page_title="Gestor Pólizas Inbursa", layout="centered")
 
-# --- CONFIGURACIÓN ---
-# En Streamlit Cloud, esto se configura en "Secrets", no en el código directo por seguridad.
-# Por ahora, para probar local, puedes poner tu key aquí, pero bórrala antes de subir a GitHub.
-api_key = st.secrets["GEMINI_API_KEY"] 
+# --- 1. CONFIGURACIÓN DE API ---
+# Intenta obtener la clave de los secretos de Streamlit, si no, pide input manual (para pruebas locales)
+try:
+    api_key = st.secrets["GEMINI_API_KEY"]
+except:
+    # Esto es solo por si lo corres en tu compu sin secrets.toml
+    api_key = st.sidebar.text_input("Ingresa tu Gemini API Key", type="password")
+
+if not api_key:
+    st.error("Por favor configura la API Key en los 'Secrets' de Streamlit o en la barra lateral.")
+    st.stop()
+
 genai.configure(api_key=api_key)
 
+# --- 2. FUNCIONES ---
+
+def clean_json_text(text):
+    """Limpia la respuesta de la IA por si incluye bloques de código markdown"""
+    text = text.replace("```json", "").replace("```", "").strip()
+    return text
+
 def extract_data_with_gemini(uploaded_file):
-    # Usamos Gemini 1.5 Flash por velocidad
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-
-    # --- BLOQUE DE DIAGNÓSTICO TEMPORAL ---
-st.write("🔍 Buscando modelos disponibles para tu API Key...")
-try:
-    available_models = []
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            available_models.append(m.name)
+    """Envía el archivo a Gemini y retorna un diccionario JSON"""
     
-    st.success(f"Modelos encontrados: {len(available_models)}")
-    st.code(available_models) # Aquí verás los nombres REALES (ej: models/gemini-pro)
-except Exception as e:
-    st.error(f"Error grave conectando con Google: {e}")
-# --------------------------------------
-    
-    prompt = """
-    Actúa como un experto administrativo de seguros. Analiza este documento (PDF/Imagen) y extrae la siguiente información en formato JSON estricto.
-    Si un dato no está claro, usa null.
-    
-    Campos requeridos:
-    - nombre_asegurado (String)
-    - fecha_renovacion (Formato YYYY-MM-DD)
-    - tipo_poliza (Ej: Vida, Autos, Gastos Médicos)
-    - costo_informativo (String con moneda, Ej: $5,000 MXN)
-    - telefono_contacto (String)
-    - aseguradora (String)
-
-    Responde SOLO con el JSON, sin texto adicional ni bloques de código markdown.
-    """
-    
-    # Procesar archivo (Streamlit sube bytes, Gemini necesita el mime_type)
-    bytes_data = uploaded_file.getvalue()
-    mime_type = uploaded_file.type
+    # Intentamos usar el modelo Flash, si falla, usamos Pro.
+    # El nombre 'gemini-1.5-flash' es el estándar actual.
+    model_name = 'gemini-1.5-flash' 
     
     try:
+        model = genai.GenerativeModel(model_name)
+        
+        prompt = """
+        Eres un asistente experto en seguros. Extrae la siguiente información de la póliza adjunta.
+        Devuelve SOLO un objeto JSON válido. Si un campo no se encuentra, usa null.
+        
+        Claves del JSON:
+        - nombre_asegurado (Texto)
+        - fecha_renovacion (Formato YYYY-MM-DD)
+        - tipo_poliza (Ej: Automóvil, Vida, GMM)
+        - costo_informativo (Texto con moneda)
+        - telefono_contacto (Texto)
+        - aseguradora (Texto, ej: Inbursa)
+        """
+
+        # Preparamos los datos
+        bytes_data = uploaded_file.getvalue()
+        mime_type = uploaded_file.type
+
+        # Llamada a la API
         response = model.generate_content([
             {'mime_type': mime_type, 'data': bytes_data},
             prompt
         ])
-        return json.loads(response.text)
+
+        # Limpiamos y convertimos a JSON
+        clean_text = clean_json_text(response.text)
+        return json.loads(clean_text)
+
     except Exception as e:
-        st.error(f"Error al leer con IA: {e}")
+        st.error(f"Error procesando el documento: {e}")
         return None
 
-# --- INTERFAZ ---
-st.title("📂 Carga de Pólizas - MVP")
-st.markdown("Sube la póliza (PDF o Imagen) para programar los recordatorios.")
+# --- 3. INTERFAZ DE USUARIO (FRONTEND) ---
 
-uploaded_file = st.file_uploader("Arrastra la póliza aquí", type=['pdf', 'jpg', 'png'])
+st.title("🛡️ Extractor de Pólizas Inbursa")
+st.write("Sube tu PDF para extraer los datos y programar recordatorios.")
+
+# Subida de archivo
+uploaded_file = st.file_uploader("Sube la póliza (PDF, JPG, PNG)", type=['pdf', 'jpg', 'png', 'jpeg'])
 
 if uploaded_file:
-    with st.spinner('Analizando documento con IA...'):
-        if 'datos_extraidos' not in st.session_state:
+    # Solo procesamos si no lo hemos hecho ya para este archivo
+    if 'datos_extraidos' not in st.session_state or st.session_state.get('file_name') != uploaded_file.name:
+        with st.spinner('Leyendo documento con IA...'):
             data = extract_data_with_gemini(uploaded_file)
-            st.session_state['datos_extraidos'] = data
+            if data:
+                st.session_state['datos_extraidos'] = data
+                st.session_state['file_name'] = uploaded_file.name
+            else:
+                st.warning("No se pudieron extraer datos. Intenta con otra imagen.")
+
+    # Mostrar formulario si hay datos
+    if 'datos_extraidos' in st.session_state:
+        data = st.session_state['datos_extraidos']
         
-        if st.session_state['datos_extraidos']:
-            st.success("¡Datos extraídos!")
+        st.success("✅ Datos extraídos. Verifica antes de guardar.")
+        
+        with st.form("form_poliza"):
+            col1, col2 = st.columns(2)
             
-            # Formulario para verificar/editar lo que la IA encontró
-            with st.form("verificacion"):
-                col1, col2 = st.columns(2)
-                data = st.session_state['datos_extraidos']
-                
-                nombre = col1.text_input("Asegurado", value=data.get('nombre_asegurado'))
-                fecha = col2.text_input("Fecha Renovación (YYYY-MM-DD)", value=data.get('fecha_renovacion'))
-                tipo = col1.text_input("Tipo Póliza", value=data.get('tipo_poliza'))
-                costo = col2.text_input("Costo (Informativo)", value=data.get('costo_informativo'))
-                tel = col1.text_input("Tel. Cliente", value=data.get('telefono_contacto'))
-                
-                # Configuración de recordatorios
-                st.divider()
-                st.subheader("Configuración de Alertas")
-                advisor_phone = st.text_input("WhatsApp del Asesor (para notificaciones)", value="521...")
-                
-                submitted = st.form_submit_button("✅ Guardar y Programar Alertas")
-                
-                if submitted:
-                    # AQUÍ CONECTAREMOS CON GOOGLE SHEETS
-                    nuevo_registro = {
-                        "Nombre": nombre,
-                        "Fecha Vencimiento": fecha,
-                        "Tipo": tipo,
-                        "Costo": costo,
-                        "Asesor Phone": advisor_phone,
-                        "Status": "Activo",
-                        "Creado": datetime.now().strftime("%Y-%m-%d")
-                    }
-                    st.write("JSON a enviar a Base de Datos:", nuevo_registro)
-                    st.toast("Guardado exitosamente (Simulación)")
-                    # Limpiar estado para siguiente subida
+            nombre = col1.text_input("Nombre Asegurado", value=data.get('nombre_asegurado'))
+            fecha = col2.text_input("Fecha Renovación (YYYY-MM-DD)", value=data.get('fecha_renovacion'))
+            tipo = col1.text_input("Tipo de Póliza", value=data.get('tipo_poliza'))
+            costo = col2.text_input("Costo (Informativo)", value=data.get('costo_informativo'))
+            tel_cliente = col1.text_input("Teléfono Cliente", value=data.get('telefono_contacto'))
+            aseguradora = col2.text_input("Aseguradora", value=data.get('aseguradora'))
 
-                    del st.session_state['datos_extraidos']
-
+            st.divider()
+            st.caption("Configuración para el Asesor")
+            tel_asesor = st.text_input("WhatsApp del Asesor (para recibir la alerta)", value="521...")
+            
+            submitted = st.form_submit_button("💾 Guardar y Programar Recordatorio")
+            
+            if submitted:
+                # AQUÍ IRÁ LA CONEXIÓN A GOOGLE SHEETS DESPUÉS
+                st.balloons()
+                st.info(f"Simulación: Se guardó recordatorio para {nombre} el día {fecha}.")
+                st.json({
+                    "cliente": nombre,
+                    "renovacion": fecha,
+                    "notificar_a": tel_asesor,
+                    "estado": "Pendiente"
+                })
