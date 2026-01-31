@@ -1,22 +1,19 @@
 import streamlit as st
 import google.generativeai as genai
 import json
-import pandas as pd
-from datetime import datetime
+import time
 
 # Configuración de la página
 st.set_page_config(page_title="Gestor Pólizas Inbursa", layout="centered")
 
 # --- 1. CONFIGURACIÓN DE API ---
-# Intenta obtener la clave de los secretos de Streamlit, si no, pide input manual (para pruebas locales)
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
 except:
-    # Esto es solo por si lo corres en tu compu sin secrets.toml
     api_key = st.sidebar.text_input("Ingresa tu Gemini API Key", type="password")
 
 if not api_key:
-    st.error("Por favor configura la API Key en los 'Secrets' de Streamlit o en la barra lateral.")
+    st.error("⚠️ Falta la API Key. Configúrala en secrets.toml o en la barra lateral.")
     st.stop()
 
 genai.configure(api_key=api_key)
@@ -24,99 +21,104 @@ genai.configure(api_key=api_key)
 # --- 2. FUNCIONES ---
 
 def clean_json_text(text):
-    """Limpia la respuesta de la IA por si incluye bloques de código markdown"""
+    """Limpia la respuesta para obtener solo el JSON"""
     text = text.replace("```json", "").replace("```", "").strip()
     return text
 
 def extract_data_with_gemini(uploaded_file):
-    """Envía el archivo a Gemini y retorna un diccionario JSON"""
+    """
+    Intenta extraer datos probando varios modelos automáticamente 
+    hasta que uno funcione.
+    """
     
-    # Intentamos usar el modelo Flash, si falla, usamos Pro.
-    # El nombre 'gemini-1.5-flash' es el estándar actual.
-    model_name = 'gemini-1.5-flash' 
+    # Lista de modelos a probar en orden de prioridad
+    # Si el primero da error 404, el código saltará al siguiente automáticamente.
+    modelos_a_probar = [
+        'gemini-1.5-flash',       # Opción A: Estándar
+        'gemini-1.5-flash-001',   # Opción B: Versión específica (muy estable)
+        'gemini-1.5-pro',         # Opción C: Más potente (si Flash falla)
+        'gemini-1.5-flash-latest' # Opción D: Última versión
+    ]
+
+    prompt = """
+    Eres un experto en seguros. Extrae la información de este documento.
+    Responde ÚNICAMENTE con un JSON válido.
     
-    try:
-        model = genai.GenerativeModel(model_name)
-        
-        prompt = """
-        Eres un asistente experto en seguros. Extrae la siguiente información de la póliza adjunta.
-        Devuelve SOLO un objeto JSON válido. Si un campo no se encuentra, usa null.
-        
-        Claves del JSON:
-        - nombre_asegurado (Texto)
-        - fecha_renovacion (Formato YYYY-MM-DD)
-        - tipo_poliza (Ej: Automóvil, Vida, GMM)
-        - costo_informativo (Texto con moneda)
-        - telefono_contacto (Texto)
-        - aseguradora (Texto, ej: Inbursa)
-        """
+    Claves requeridas (usa null si no encuentras el dato):
+    - nombre_asegurado
+    - fecha_renovacion (YYYY-MM-DD)
+    - tipo_poliza (Ej: Auto, GMM, Vida)
+    - costo_informativo
+    - telefono_contacto
+    - aseguradora
+    """
 
-        # Preparamos los datos
-        bytes_data = uploaded_file.getvalue()
-        mime_type = uploaded_file.type
+    bytes_data = uploaded_file.getvalue()
+    mime_type = uploaded_file.type
 
-        # Llamada a la API
-        response = model.generate_content([
-            {'mime_type': mime_type, 'data': bytes_data},
-            prompt
-        ])
+    # Bucle de intentos
+    for modelo in modelos_a_probar:
+        try:
+            # Intentamos configurar el modelo actual
+            model = genai.GenerativeModel(modelo)
+            
+            # Intentamos generar el contenido
+            response = model.generate_content([
+                {'mime_type': mime_type, 'data': bytes_data},
+                prompt
+            ])
+            
+            # Si llegamos aquí, funcionó. Procesamos y salimos.
+            st.toast(f"✅ Éxito usando el modelo: {modelo}") # Aviso visual de cuál funcionó
+            clean_text = clean_json_text(response.text)
+            return json.loads(clean_text)
 
-        # Limpiamos y convertimos a JSON
-        clean_text = clean_json_text(response.text)
-        return json.loads(clean_text)
+        except Exception as e:
+            # Si falla, imprimimos un aviso pequeño y probamos el siguiente
+            print(f"Fallo con {modelo}: {e}")
+            continue # Pasa al siguiente modelo de la lista
+            
+    # Si terminamos el bucle y ninguno funcionó:
+    st.error("❌ Todos los modelos fallaron. Verifica que tu API Key tenga permisos para 'Generative Language API'.")
+    return None
 
-    except Exception as e:
-        st.error(f"Error procesando el documento: {e}")
-        return None
-
-# --- 3. INTERFAZ DE USUARIO (FRONTEND) ---
+# --- 3. INTERFAZ ---
 
 st.title("🛡️ Extractor de Pólizas Inbursa")
-st.write("Sube tu PDF para extraer los datos y programar recordatorios.")
+st.info("Sistema MVP - Versión Multi-Modelo")
 
-# Subida de archivo
-uploaded_file = st.file_uploader("Sube la póliza (PDF, JPG, PNG)", type=['pdf', 'jpg', 'png', 'jpeg'])
+uploaded_file = st.file_uploader("Sube póliza (PDF/Imagen)", type=['pdf', 'jpg', 'png', 'jpeg'])
 
 if uploaded_file:
-    # Solo procesamos si no lo hemos hecho ya para este archivo
+    # Lógica para no reprocesar el mismo archivo si ya se extrajo
     if 'datos_extraidos' not in st.session_state or st.session_state.get('file_name') != uploaded_file.name:
-        with st.spinner('Leyendo documento con IA...'):
+        
+        with st.spinner('Analizando documento (probando modelos de IA)...'):
             data = extract_data_with_gemini(uploaded_file)
+            
             if data:
                 st.session_state['datos_extraidos'] = data
                 st.session_state['file_name'] = uploaded_file.name
             else:
-                st.warning("No se pudieron extraer datos. Intenta con otra imagen.")
+                st.error("No se pudo leer el documento con ningún modelo.")
 
-    # Mostrar formulario si hay datos
+    # Mostrar resultados si existen
     if 'datos_extraidos' in st.session_state:
         data = st.session_state['datos_extraidos']
         
-        st.success("✅ Datos extraídos. Verifica antes de guardar.")
-        
-        with st.form("form_poliza"):
-            col1, col2 = st.columns(2)
+        with st.form("revision"):
+            st.subheader("Verifica los Datos")
+            c1, c2 = st.columns(2)
             
-            nombre = col1.text_input("Nombre Asegurado", value=data.get('nombre_asegurado'))
-            fecha = col2.text_input("Fecha Renovación (YYYY-MM-DD)", value=data.get('fecha_renovacion'))
-            tipo = col1.text_input("Tipo de Póliza", value=data.get('tipo_poliza'))
-            costo = col2.text_input("Costo (Informativo)", value=data.get('costo_informativo'))
-            tel_cliente = col1.text_input("Teléfono Cliente", value=data.get('telefono_contacto'))
-            aseguradora = col2.text_input("Aseguradora", value=data.get('aseguradora'))
-
+            nombre = c1.text_input("Asegurado", value=data.get('nombre_asegurado'))
+            fecha = c2.text_input("Renovación", value=data.get('fecha_renovacion'))
+            tipo = c1.text_input("Tipo", value=data.get('tipo_poliza'))
+            costo = c2.text_input("Costo", value=data.get('costo_informativo'))
+            tel = c1.text_input("Tel. Cliente", value=data.get('telefono_contacto'))
+            
             st.divider()
-            st.caption("Configuración para el Asesor")
-            tel_asesor = st.text_input("WhatsApp del Asesor (para recibir la alerta)", value="521...")
+            asesor = st.text_input("WhatsApp Asesor", value="521...")
             
-            submitted = st.form_submit_button("💾 Guardar y Programar Recordatorio")
-            
-            if submitted:
-                # AQUÍ IRÁ LA CONEXIÓN A GOOGLE SHEETS DESPUÉS
-                st.balloons()
-                st.info(f"Simulación: Se guardó recordatorio para {nombre} el día {fecha}.")
-                st.json({
-                    "cliente": nombre,
-                    "renovacion": fecha,
-                    "notificar_a": tel_asesor,
-                    "estado": "Pendiente"
-                })
+            if st.form_submit_button("💾 Guardar"):
+                st.success("Guardado correctamente (Simulación)")
+                st.json(data)
