@@ -15,7 +15,7 @@ genai.configure(api_key=api_key)
 
 def extract_data_with_gemini(uploaded_file):
     # Usamos Gemini 1.5 Flash por velocidad
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     
     prompt = """
     Actúa como un experto administrativo de seguros. Analiza este documento (PDF/Imagen) y extrae la siguiente información en formato JSON estricto.
@@ -93,4 +93,5 @@ if uploaded_file:
                     st.write("JSON a enviar a Base de Datos:", nuevo_registro)
                     st.toast("Guardado exitosamente (Simulación)")
                     # Limpiar estado para siguiente subida
+
                     del st.session_state['datos_extraidos']
