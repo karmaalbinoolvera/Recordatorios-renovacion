@@ -10,7 +10,7 @@ st.set_page_config(page_title="Gestor Pólizas Inbursa", layout="centered")
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
 except:
-    api_key = st.sidebar.text_input("Ingresa tu Gemini API Key", type="password")
+    api_key = st.sidebar.text_input("AIzaSyCEXc9iwb4_R6VXqvDebu93XiIWQLeE2L0", type="password")
 
 if not api_key:
     st.error("⚠️ Falta la API Key. Configúrala en secrets.toml o en la barra lateral.")
@@ -122,3 +122,4 @@ if uploaded_file:
             if st.form_submit_button("💾 Guardar"):
                 st.success("Guardado correctamente (Simulación)")
                 st.json(data)
+
