@@ -28,7 +28,7 @@ def encrypt_data(text):
     return cipher_suite.encrypt(text.encode()).decode()
 
 def decrypt_data(text_encrypted):
-    """(Opcional) Para que el asesor pueda ver el dato desencriptado si lo necesita"""
+    """(Opcional) Para desencriptar si fuera necesario"""
     try:
         return cipher_suite.decrypt(text_encrypted.encode()).decode()
     except:
@@ -49,12 +49,12 @@ def extract_data_with_gemini(uploaded_file):
     REGLAS DE FECHAS:
     - Busca fecha y HORA. Formato: 'YYYY-MM-DD HH:MM'.
     - Si la póliza dice solo fecha sin hora, asume '00:00'.
-    - Ejemplo: "2025-05-20 12:00"
     
     CAMPOS A EXTRAER:
-    - CLIENTE (Nombre del asegurado)
+    - NOMBRE_CLIENTE (Nombre completo del asegurado)
+    - NUMERO_CLIENTE (Número de identificación del cliente/asegurado)
     - POLIZA (Número de póliza)
-    - CIS (Código de Identificación, suele estar cerca de la póliza)
+    - CIS (Código de Identificación)
     - VIGENCIA_FIN (Fecha y hora exacta de vencimiento)
     - FECHA_CONTRATACION (Fecha y hora de inicio/emisión)
     """
@@ -84,8 +84,7 @@ if not st.session_state['usuario_validado']:
         if submitted and email and telefono:
             st.session_state['temp_email'] = email
             st.session_state['temp_tel'] = telefono
-            # AQUÍ IRÍA EL ENVÍO REAL DE SMS/EMAIL (Twilio/Sendgrid)
-            # Para el MVP, mostramos el código en pantalla:
+            # SIMULACIÓN DE 2FA
             st.session_state['codigo_real'] = "123456" 
             st.success(f"SIMULACIÓN: Tu código de verificación es {st.session_state['codigo_real']}")
             st.session_state['esperando_codigo'] = True
@@ -101,7 +100,7 @@ if not st.session_state['usuario_validado']:
             else:
                 st.error("Código incorrecto.")
     
-    st.stop() # Detiene la app aquí si no está logueado
+    st.stop() 
 
 # --- INTERFAZ: APP PRINCIPAL ---
 
@@ -133,23 +132,28 @@ if uploaded_file:
             st.subheader("Datos Detectados")
             c1, c2 = st.columns(2)
             
-            # Campos editables
-            # El cliente se muestra legible aquí, pero se encriptará al guardar
-            cliente = c1.text_input("CLIENTE (Se encriptará)", value=d.get('CLIENTE'))
-            poliza = c2.text_input("PÓLIZA", value=d.get('POLIZA'))
-            cis = c1.text_input("CIS", value=d.get('CIS'))
+            # --- CAMPOS (NUEVO ORDEN) ---
+            # Nombre (Se encriptará)
+            nombre_cliente = c1.text_input("NOMBRE CLIENTE (Se encriptará)", value=d.get('NOMBRE_CLIENTE'))
             
-            vigencia = c2.text_input("VIGENCIA FIN (YYYY-MM-DD HH:MM)", value=d.get('VIGENCIA_FIN'))
-            contratacion = c1.text_input("CONTRATACIÓN (YYYY-MM-DD HH:MM)", value=d.get('FECHA_CONTRATACION'))
+            # ### NUEVO CAMPO ###
+            num_cliente = c2.text_input("NÚMERO DE CLIENTE", value=d.get('NUMERO_CLIENTE'))
+            
+            poliza = c1.text_input("PÓLIZA", value=d.get('POLIZA'))
+            cis = c2.text_input("CIS", value=d.get('CIS'))
+            
+            vigencia = c1.text_input("VIGENCIA FIN (YYYY-MM-DD HH:MM)", value=d.get('VIGENCIA_FIN'))
+            contratacion = c2.text_input("CONTRATACIÓN (YYYY-MM-DD HH:MM)", value=d.get('FECHA_CONTRATACION'))
             
             if st.form_submit_button("🔒 Encriptar y Guardar"):
-                # Encriptación
-                cliente_enc = encrypt_data(cliente)
+                # Encriptación del nombre
+                cliente_enc = encrypt_data(nombre_cliente)
                 
-                # Preparar registro
+                # Preparar registro con el NUEVO CAMPO
                 registro = pd.DataFrame([{
-                    "ID_Registro": str(datetime.now().timestamp()), # ID único simple
+                    "ID_Registro": str(datetime.now().timestamp()),
                     "Cliente_Encriptado": cliente_enc,
+                    "Numero_Cliente": num_cliente,  # <-- AQUÍ SE GUARDA EL NUEVO DATO
                     "Poliza": poliza,
                     "CIS": cis,
                     "Vigencia_Fin": vigencia,
@@ -166,7 +170,7 @@ if uploaded_file:
                     conn.update(data=nuevo)
                     
                     st.success("✅ Guardado seguro.")
-                    st.info(f"Dato guardado en nube: {cliente_enc[:10]}...") # Muestra un pedacito encriptado
+                    st.info(f"Cliente encriptado: {cliente_enc[:10]}... | Num Cliente: {num_cliente}")
                     st.session_state['datos_temp'] = {}
                 except Exception as e:
                     st.error(f"Error Sheets: {e}")
