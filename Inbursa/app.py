@@ -1,80 +1,41 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+import os
 import json
-import pandas as pd
+import requests
 from datetime import datetime
-from streamlit_gsheets import GSheetsConnection
+import uuid
 from cryptography.fernet import Fernet
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Gestor Inbursa Seguro", layout="centered")
+st.set_page_config(page_title="Panel IA - Pólizas", layout="wide", initial_sidebar_state="expanded")
 
-# Recuperar claves
+# Recuperar claves desde los Secrets de Streamlit Cloud
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
     enc_key = st.secrets["ENCRYPTION_KEY"]
-except:
+    # Es mejor poner tu Webhook URL en los secrets también
+    url_webhook = st.secrets.get("WEBHOOK_URL", "AQUI_TU_URL_DE_PRUEBA_O_PRODUCCION") 
+except Exception as e:
     st.error("⚠️ Faltan claves en Secrets (GEMINI_API_KEY o ENCRYPTION_KEY).")
     st.stop()
 
-genai.configure(api_key=api_key)
 cipher_suite = Fernet(enc_key)
 
 # --- FUNCIONES DE SEGURIDAD ---
-
 def encrypt_data(text):
-    """Encripta un texto (ej: Nombre Cliente)"""
     if not text: return None
     return cipher_suite.encrypt(text.encode()).decode()
-
-def decrypt_data(text_encrypted):
-    """(Opcional) Para desencriptar si fuera necesario"""
-    try:
-        return cipher_suite.decrypt(text_encrypted.encode()).decode()
-    except:
-        return "Error desencriptando"
-
-# --- FUNCIONES DE IA ---
-
-def clean_json_text(text):
-    return text.replace("```json", "").replace("```", "").strip()
-
-def extract_data_with_gemini(uploaded_file):
-    model_name = 'models/gemini-2.5-flash'
-    
-    prompt = """
-    Actúa como experto en seguros Inbursa. Extrae datos de la póliza.
-    Devuelve un JSON estricto. Si no encuentras un dato, usa null.
-    
-    REGLAS DE FECHAS:
-    - Busca fecha y HORA. Formato: 'YYYY-MM-DD HH:MM'.
-    - Si la póliza dice solo fecha sin hora, asume '00:00'.
-    
-    CAMPOS A EXTRAER:
-    - NOMBRE_CLIENTE (Nombre completo del asegurado)
-    - NUMERO_CLIENTE (Número de identificación del cliente/asegurado)
-    - POLIZA (Número de póliza)
-    - CIS (Código de Identificación)
-    - VIGENCIA_FIN (Fecha y hora exacta de vencimiento)
-    - FECHA_CONTRATACION (Fecha y hora de inicio/emisión)
-    """
-
-    try:
-        model = genai.GenerativeModel(model_name)
-        bytes_data = uploaded_file.getvalue()
-        response = model.generate_content([{'mime_type': uploaded_file.type, 'data': bytes_data}, prompt])
-        return json.loads(clean_json_text(response.text))
-    except Exception as e:
-        st.error(f"Error IA: {e}")
-        return None
 
 # --- GESTIÓN DE SESIÓN (LOGIN) ---
 if 'usuario_validado' not in st.session_state:
     st.session_state['usuario_validado'] = False
+if 'polizas_procesadas' not in st.session_state:
+    st.session_state.polizas_procesadas = []
 
-# --- INTERFAZ: LOGIN / REGISTRO ---
+# --- INTERFAZ: LOGIN ---
 if not st.session_state['usuario_validado']:
-    st.title("🔐 Acceso Asesores")
+    st.title("🔐 Acceso Asesores - Inbursa & Multimarca")
     
     with st.form("login_form"):
         email = st.text_input("Correo Institucional")
@@ -84,7 +45,6 @@ if not st.session_state['usuario_validado']:
         if submitted and email and telefono:
             st.session_state['temp_email'] = email
             st.session_state['temp_tel'] = telefono
-            # SIMULACIÓN DE 2FA
             st.session_state['codigo_real'] = "123456" 
             st.success(f"SIMULACIÓN: Tu código de verificación es {st.session_state['codigo_real']}")
             st.session_state['esperando_codigo'] = True
@@ -103,74 +63,114 @@ if not st.session_state['usuario_validado']:
     st.stop() 
 
 # --- INTERFAZ: APP PRINCIPAL ---
+with st.sidebar:
+    st.success(f"👤 Asesor conectado:\n{st.session_state['asesor_email']}")
+    if st.button("Cerrar Sesión"):
+        st.session_state['usuario_validado'] = False
+        st.session_state.polizas_procesadas = []
+        st.rerun()
 
-st.sidebar.success(f"Asesor: {st.session_state['asesor_email']}")
-if st.sidebar.button("Cerrar Sesión"):
-    st.session_state['usuario_validado'] = False
-    st.rerun()
+st.title("🛡️ Panel Inteligente de Extracción de Pólizas")
+st.markdown("---")
 
-st.title("📄 Procesador de Pólizas (Seguro)")
+st.subheader("📁 Carga de Documentos")
+uploaded_files = st.file_uploader("Arrastra una o varias pólizas en PDF", type=["pdf"], accept_multiple_files=True)
 
-uploaded_file = st.file_uploader("Sube póliza (PDF)", type=['pdf', 'png', 'jpg'])
-
-if 'datos_temp' not in st.session_state:
-    st.session_state['datos_temp'] = {}
-
-if uploaded_file:
-    if st.button("🔍 Extraer Datos"):
-        with st.spinner('Analizando...'):
-            data = extract_data_with_gemini(uploaded_file)
-            if data:
-                st.session_state['datos_temp'] = data
-            else:
-                st.error("No se pudo leer.")
-
-    if st.session_state['datos_temp']:
-        d = st.session_state['datos_temp']
+if uploaded_files:
+    if st.button("Procesar Documentos", type="primary"):
+        client = genai.Client(api_key=api_key)
+        st.session_state.polizas_procesadas = [] 
         
-        with st.form("final_review"):
-            st.subheader("Datos Detectados")
-            c1, c2 = st.columns(2)
+        st.markdown("### 📊 Resultados de Extracción")
+        
+        for file in uploaded_files:
+            col_info, col_json = st.columns([1, 1])
+            with col_info:
+                st.write(f"**Documento:** `{file.name}`")
+                with st.spinner("Analizando con Gemini 2.5 Flash..."):
+                    try:
+                        temp_pdf_path = f"temp_{file.name}"
+                        with open(temp_pdf_path, "wb") as f:
+                            f.write(file.getbuffer())
+                        
+                        archivo_gemini = client.files.upload(file=temp_pdf_path)
+                        
+                        prompt_extraccion = """
+                        Eres un analista de datos experto en pólizas de seguros en México. Extrae la información del PDF adjunto y devuélvela ESTRICTAMENTE en JSON válido.
+                        {
+                          "institucion_emisora": "Nombre de la aseguradora",
+                          "nombre_cliente": "Nombre completo del titular",
+                          "tipo_poliza": "Clasifícalo estrictamente en: Auto, Moto, Vida, GMM, Accidentes Personales, o Tarjeta/Cuenta",
+                          "numero_poliza": "El identificador alfanumérico principal. REGLA ESTRICTA: Elimina cualquier símbolo especial (como %, #, -, o espacios). Debe ser puramente alfanumérico. Si hay un número corto y uno largo, extrae la cadena alfanumérica más larga.",
+                          "fecha_inicio_vigencia": "Formato YYYY-MM-DD",
+                          "fecha_fin_vigencia": "Formato YYYY-MM-DD",
+                          "hora_fin_vigencia": "Hora exacta en que termina la vigencia en formato de 24 horas (ej. 12:00). Si no especifica, devuelve '12:00'.",
+                          "precio_total": "El costo final a pagar. Devuelve ESTRICTAMENTE solo el valor numérico con decimales, sin comas y sin el signo de pesos (ej. 11144.26).",
+                          "moneda": "Devuelve estrictamente 'MXN' o 'USD'."
+                        }
+                        Ignora fechas de emisión o expedición. Solo fechas reales de vigencia.
+                        """
+                        
+                        response = client.models.generate_content(
+                            model='gemini-2.5-flash', 
+                            contents=[archivo_gemini, prompt_extraccion]
+                        )
+                        
+                        texto_limpio = response.text.replace('```json', '').replace('```', '').strip()
+                        datos_json = json.loads(texto_limpio)
+                        
+                        # --- INYECCIÓN DE DATOS DE SISTEMA Y ENCRIPTACIÓN ---
+                        datos_json["ID_Registro"] = str(uuid.uuid4())[:8].upper() 
+                        datos_json["Email_Asesor"] = st.session_state['asesor_email']
+                        datos_json["Tel_Asesor"] = st.session_state['asesor_tel']
+                        datos_json["Numero_Cliente_CIS"] = "" 
+                        # Encriptamos el nombre para guardarlo seguro en la base de datos
+                        datos_json["Cliente_Encriptado"] = encrypt_data(datos_json["nombre_cliente"])
+                        # ----------------------------------------------------
+                        
+                        st.session_state.polizas_procesadas.append(datos_json)
+                        
+                        # Lógica visual de vigencia
+                        try:
+                            fecha_fin = datetime.strptime(datos_json["fecha_fin_vigencia"], "%Y-%m-%d").date()
+                            hoy = datetime.now().date()
+                            dias_restantes = (fecha_fin - hoy).days
+                            
+                            if dias_restantes < 0:
+                                st.error(f"🔴 VENCIDA (Hace {abs(dias_restantes)} días)")
+                            elif dias_restantes <= 30:
+                                st.warning(f"🟡 PRÓXIMA A VENCER (En {dias_restantes} días)")
+                            else:
+                                st.success(f"🟢 VIGENTE (Vence en {dias_restantes} días)")
+                        except:
+                            pass
+
+                        os.remove(temp_pdf_path)
+                        client.files.delete(name=archivo_gemini.name)
+                        
+                    except Exception as e:
+                        st.error(f"Error procesando {file.name}: {e}")
             
-            # --- CAMPOS (NUEVO ORDEN) ---
-            # Nombre (Se encriptará)
-            nombre_cliente = c1.text_input("NOMBRE CLIENTE (Se encriptará)", value=d.get('NOMBRE_CLIENTE'))
-            
-            # ### NUEVO CAMPO ###
-            num_cliente = c2.text_input("NÚMERO DE CLIENTE", value=d.get('NUMERO_CLIENTE'))
-            
-            poliza = c1.text_input("PÓLIZA", value=d.get('POLIZA'))
-            cis = c2.text_input("CIS", value=d.get('CIS'))
-            
-            vigencia = c1.text_input("VIGENCIA FIN (YYYY-MM-DD HH:MM)", value=d.get('VIGENCIA_FIN'))
-            contratacion = c2.text_input("CONTRATACIÓN (YYYY-MM-DD HH:MM)", value=d.get('FECHA_CONTRATACION'))
-            
-            if st.form_submit_button("🔒 Encriptar y Guardar"):
-                # Encriptación del nombre
-                cliente_enc = encrypt_data(nombre_cliente)
+            with col_json:
+                st.json(datos_json)
+            st.markdown("---")
+
+if len(st.session_state.polizas_procesadas) > 0:
+    st.info(f"✅ Tienes {len(st.session_state.polizas_procesadas)} póliza(s) lista(s) en memoria para exportar.")
+    
+    if st.button("🚀 Enviar TODAS a Base de Datos y Sheets", type="primary", use_container_width=True):
+        if url_webhook != "AQUI_TU_URL_DE_PRUEBA_O_PRODUCCION":
+            try:
+                paquete_masivo = {"polizas": st.session_state.polizas_procesadas}
+                respuesta_n8n = requests.post(url_webhook, json=paquete_masivo)
                 
-                # Preparar registro con el NUEVO CAMPO
-                registro = pd.DataFrame([{
-                    "ID_Registro": str(datetime.now().timestamp()),
-                    "Cliente_Encriptado": cliente_enc,
-                    "Numero_Cliente": num_cliente,  # <-- AQUÍ SE GUARDA EL NUEVO DATO
-                    "Poliza": poliza,
-                    "CIS": cis,
-                    "Vigencia_Fin": vigencia,
-                    "Fecha_Contratacion": contratacion,
-                    "Email_Asesor": st.session_state['asesor_email'],
-                    "Tel_Asesor": st.session_state['asesor_tel'],
-                    "Fecha_Registro": datetime.now().strftime("%Y-%m-%d %H:%M")
-                }])
-                
-                try:
-                    conn = st.connection("gsheets", type=GSheetsConnection)
-                    existente = conn.read(ttl=0)
-                    nuevo = pd.concat([existente, registro], ignore_index=True).dropna(how="all")
-                    conn.update(data=nuevo)
-                    
-                    st.success("✅ Guardado seguro.")
-                    st.info(f"Cliente encriptado: {cliente_enc[:10]}... | Num Cliente: {num_cliente}")
-                    st.session_state['datos_temp'] = {}
-                except Exception as e:
-                    st.error(f"Error Sheets: {e}")
+                if respuesta_n8n.status_code == 200:
+                    st.balloons()
+                    st.success("¡Envío masivo exitoso! Los datos ya están en la base de datos.")
+                    st.session_state.polizas_procesadas = [] 
+                else:
+                    st.error(f"El servidor de n8n rechazó la conexión. Código: {respuesta_n8n.status_code}")
+            except Exception as e:
+                st.error(f"No hay conexión a internet o la URL es inválida: {e}")
+        else:
+            st.error("⚠️ Falta configurar la URL del Webhook en los secrets de Streamlit.")
