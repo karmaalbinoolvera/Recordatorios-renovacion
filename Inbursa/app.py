@@ -15,7 +15,7 @@ try:
     api_key = st.secrets["GEMINI_API_KEY"]
     enc_key = st.secrets["ENCRYPTION_KEY"]
     # Es mejor poner tu Webhook URL en los secrets también
-    url_webhook = st.secrets.get("WEBHOOK_URL", "AQUI_TU_URL_DE_PRUEBA_O_PRODUCCION") 
+    url_webhook = st.secrets.get("WEBHOOK_URL", "http://localhost:5678/webhook-test/recibir-polizas-v2") 
 except Exception as e:
     st.error("⚠️ Faltan claves en Secrets (GEMINI_API_KEY o ENCRYPTION_KEY).")
     st.stop()
@@ -159,7 +159,7 @@ if len(st.session_state.polizas_procesadas) > 0:
     st.info(f"✅ Tienes {len(st.session_state.polizas_procesadas)} póliza(s) lista(s) en memoria para exportar.")
     
     if st.button("🚀 Enviar TODAS a Base de Datos y Sheets", type="primary", use_container_width=True):
-        if url_webhook != "AQUI_TU_URL_DE_PRUEBA_O_PRODUCCION":
+        if url_webhook != "http://localhost:5678/webhook-test/recibir-polizas-v2":
             try:
                 paquete_masivo = {"polizas": st.session_state.polizas_procesadas}
                 respuesta_n8n = requests.post(url_webhook, json=paquete_masivo)
